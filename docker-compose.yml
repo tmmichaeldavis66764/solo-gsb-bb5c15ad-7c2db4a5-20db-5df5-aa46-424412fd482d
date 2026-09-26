@@ -1,0 +1,15 @@
+services:
+  balancer:
+    build: .
+    image: centrifuge-balancer:1.0
+    container_name: centrifuge-balancer
+    # 一键启动: docker compose up --build
+    # 入口脚本在启动时自动完成依赖检查/补装, 应用 startup 自动建库建表。
+    ports:
+      - "8000:8000"
+    environment:
+      # SQLite 数据库文件路径(容器内); 通过下方卷持久化到宿主机
+      BALANCER_DB: /app/data/balancer.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
