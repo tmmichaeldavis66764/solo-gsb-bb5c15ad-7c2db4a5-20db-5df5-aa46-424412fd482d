@@ -84,8 +84,18 @@ function renderSlotEditor() {
 // ---------------------------------------------------------------------------
 // 输入:试管
 // ---------------------------------------------------------------------------
+// 分配未被占用的试管编号: 从 nextTubeId 起递增并跳过仍在使用的编号,
+// 保证改号(如 1→7)后新增试管不会再取到已占用编号导致保存时编号重复。
+function allocTubeId() {
+  const used = new Set(state.tubes.map((t) => t.id));
+  let id = Math.max(1, state.nextTubeId);
+  while (used.has(id)) id++;
+  state.nextTubeId = id + 1;
+  return id;
+}
+
 function addTube(t) {
-  const id = t?.id ?? state.nextTubeId++;
+  const id = t?.id ?? allocTubeId();
   state.nextTubeId = Math.max(state.nextTubeId, id + 1);
   state.tubes.push({
     id,
@@ -94,6 +104,43 @@ function addTube(t) {
     slot: t?.slot ?? null,
   });
   renderTubes();
+}
+
+// 编号编辑按一次提交处理(输入框 change 时调用, 而非逐键提交):
+// 空值、非整数或与其他试管冲突时恢复原编号并提示; 成功改号时同步更新
+// 互斥对引用, 并随试管清单重绘刷新互斥对下拉显示。
+function commitTubeId(t, input) {
+  const raw = input.value.trim();
+  const v = raw === "" ? NaN : Number(raw);
+  const revert = (msg) => {
+    input.value = t.id;
+    toast(msg, true);
+  };
+  if (!Number.isInteger(v)) {
+    revert(`试管编号必须为整数, 已恢复原编号 ${t.id}。`);
+    return;
+  }
+  if (v === t.id) {
+    input.value = t.id;  // 归一化显示(如 "07" → 7)
+    return;
+  }
+  if (state.tubes.some((o) => o !== t && o.id === v)) {
+    revert(`编号 ${v} 已被其他试管占用, 已恢复原编号 ${t.id}。`);
+    return;
+  }
+  const oldId = t.id;
+  t.id = v;
+  state.nextTubeId = Math.max(state.nextTubeId, v + 1);
+  // 同步互斥对中引用旧编号的端点
+  let synced = 0;
+  state.mutexPairs.forEach((mp) => {
+    if (mp.a === oldId) { mp.a = v; synced++; }
+    if (mp.b === oldId) { mp.b = v; synced++; }
+  });
+  renderTubes();
+  toast(synced
+    ? `试管 ${oldId} 已改号为 ${v}, 互斥对引用已同步(${synced} 处)。`
+    : `试管 ${oldId} 已改号为 ${v}。`);
 }
 
 function renderTubes() {
@@ -113,8 +160,7 @@ function renderTubes() {
       <td><button class="iconbtn" data-act="del">删</button></td>`;
     tr.addEventListener("input", (e) => {
       const f = e.target.dataset.f;
-      if (!f) return;
-      if (f === "id") t.id = parseInt(e.target.value) || t.id;
+      if (!f || f === "id") return;  // 编号在 change 时一次性提交, 见 commitTubeId
       if (f === "mass") t.mass = parseFloat(e.target.value) || 0;
       if (f === "locked") {
         t.locked = e.target.checked;
@@ -122,9 +168,17 @@ function renderTubes() {
       }
       if (f === "slot") t.slot = e.target.value === "" ? null : parseInt(e.target.value);
     });
+    tr.querySelector('[data-f="id"]').addEventListener("change", (e) => commitTubeId(t, e.target));
     tr.querySelector('[data-act="del"]').onclick = () => {
       state.tubes.splice(i, 1);
+      // 删除试管时一并清除引用它的互斥对, 避免保存时才发现失效引用
+      const before = state.mutexPairs.length;
+      state.mutexPairs = state.mutexPairs.filter((mp) => mp.a !== t.id && mp.b !== t.id);
       renderTubes();
+      if (state.mutexPairs.length !== before) {
+        renderMutexPairs();  // 互斥对删光时 renderTubes 不会刷新该表
+        toast(`已删除试管 ${t.id}, 并移除引用它的互斥对。`);
+      }
     };
     tb.appendChild(tr);
   });
